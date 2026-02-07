@@ -5,6 +5,7 @@
 // generated per-contract.
 
 use monty::{MontyObject, MontyRun, NoLimitTracker, NoPrint, RunProgress};
+use near_sys::*;
 
 // ---------------------------------------------------------------------------
 // Custom getrandom backend — uses NEAR's VRF randomness
@@ -27,42 +28,6 @@ unsafe extern "Rust" fn __getrandom_v03_custom(
         }
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// NEAR host function imports
-// ---------------------------------------------------------------------------
-
-#[link(wasm_import_module = "env")]
-extern "C" {
-    fn register_len(register_id: u64) -> u64;
-    fn read_register(register_id: u64, ptr: u64);
-
-    fn input(register_id: u64);
-    fn current_account_id(register_id: u64);
-    fn predecessor_account_id(register_id: u64);
-    fn signer_account_id(register_id: u64);
-    fn block_index() -> u64;
-    fn block_timestamp() -> u64;
-
-    fn storage_write(
-        key_len: u64,
-        key_ptr: u64,
-        value_len: u64,
-        value_ptr: u64,
-        register_id: u64,
-    ) -> u64;
-    fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u64;
-    fn storage_remove(key_len: u64, key_ptr: u64, register_id: u64) -> u64;
-    fn storage_has_key(key_len: u64, key_ptr: u64) -> u64;
-
-    fn sha256(value_len: u64, value_ptr: u64, register_id: u64);
-    fn keccak256(value_len: u64, value_ptr: u64, register_id: u64);
-
-    fn random_seed(register_id: u64);
-
-    fn value_return(value_len: u64, value_ptr: u64);
-    fn log_utf8(len: u64, ptr: u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,11 +154,481 @@ fn to_hex(bytes: &[u8]) -> String {
     hex
 }
 
+fn from_hex(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| {
+            hex.get(i..i + 2)
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Context API
+// ---------------------------------------------------------------------------
+
+fn near_signer_account_pk() -> Vec<u8> {
+    unsafe {
+        signer_account_pk(0);
+    }
+    near_read_register_bytes(0)
+}
+
+fn near_epoch_height() -> u64 {
+    unsafe { epoch_height() }
+}
+
+fn near_storage_usage() -> u64 {
+    unsafe { storage_usage() }
+}
+
+// ---------------------------------------------------------------------------
+// Economics API
+// ---------------------------------------------------------------------------
+
+fn near_account_balance() -> u128 {
+    let mut buf = [0u8; 16];
+    unsafe { account_balance(buf.as_mut_ptr() as u64) };
+    u128::from_le_bytes(buf)
+}
+
+fn near_account_locked_balance() -> u128 {
+    let mut buf = [0u8; 16];
+    unsafe { account_locked_balance(buf.as_mut_ptr() as u64) };
+    u128::from_le_bytes(buf)
+}
+
+fn near_attached_deposit() -> u128 {
+    let mut buf = [0u8; 16];
+    unsafe { attached_deposit(buf.as_mut_ptr() as u64) };
+    u128::from_le_bytes(buf)
+}
+
+fn near_prepaid_gas() -> u64 {
+    unsafe { prepaid_gas() }
+}
+
+fn near_used_gas() -> u64 {
+    unsafe { used_gas() }
+}
+
+// ---------------------------------------------------------------------------
+// Math API (additional)
+// ---------------------------------------------------------------------------
+
+fn near_random_seed() -> Vec<u8> {
+    unsafe {
+        random_seed(0);
+    }
+    near_read_register_bytes(0)
+}
+
+fn near_keccak512(data: &[u8]) -> Vec<u8> {
+    unsafe {
+        keccak512(data.len() as u64, data.as_ptr() as u64, 0);
+    }
+    near_read_register_bytes(0)
+}
+
+fn near_ripemd160(data: &[u8]) -> Vec<u8> {
+    unsafe {
+        ripemd160(data.len() as u64, data.as_ptr() as u64, 0);
+    }
+    near_read_register_bytes(0)
+}
+
+fn near_ecrecover(hash: &[u8], sig: &[u8], v: u64, malleability_flag: u64) -> Option<Vec<u8>> {
+    unsafe {
+        let result = ecrecover(
+            hash.len() as u64,
+            hash.as_ptr() as u64,
+            sig.len() as u64,
+            sig.as_ptr() as u64,
+            v,
+            malleability_flag,
+            0,
+        );
+        if result == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_ed25519_verify(sig: &[u8], msg: &[u8], pub_key: &[u8]) -> bool {
+    unsafe {
+        ed25519_verify(
+            sig.len() as u64,
+            sig.as_ptr() as u64,
+            msg.len() as u64,
+            msg.as_ptr() as u64,
+            pub_key.len() as u64,
+            pub_key.as_ptr() as u64,
+        ) == 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Promises API
+// ---------------------------------------------------------------------------
+
+fn near_promise_create(
+    account_id: &str,
+    function_name: &str,
+    arguments: &[u8],
+    amount: u128,
+    gas: u64,
+) -> u64 {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe {
+        promise_create(
+            account_id.len() as u64,
+            account_id.as_ptr() as u64,
+            function_name.len() as u64,
+            function_name.as_ptr() as u64,
+            arguments.len() as u64,
+            arguments.as_ptr() as u64,
+            amount_bytes.as_ptr() as u64,
+            gas,
+        )
+    }
+}
+
+fn near_promise_then(
+    promise_index: u64,
+    account_id: &str,
+    function_name: &str,
+    arguments: &[u8],
+    amount: u128,
+    gas: u64,
+) -> u64 {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe {
+        promise_then(
+            promise_index,
+            account_id.len() as u64,
+            account_id.as_ptr() as u64,
+            function_name.len() as u64,
+            function_name.as_ptr() as u64,
+            arguments.len() as u64,
+            arguments.as_ptr() as u64,
+            amount_bytes.as_ptr() as u64,
+            gas,
+        )
+    }
+}
+
+fn near_promise_and(promise_indices: &[u64]) -> u64 {
+    unsafe {
+        promise_and(
+            promise_indices.as_ptr() as u64,
+            promise_indices.len() as u64,
+        )
+    }
+}
+
+fn near_promise_batch_create(account_id: &str) -> u64 {
+    unsafe { promise_batch_create(account_id.len() as u64, account_id.as_ptr() as u64) }
+}
+
+fn near_promise_batch_then(promise_index: u64, account_id: &str) -> u64 {
+    unsafe {
+        promise_batch_then(
+            promise_index,
+            account_id.len() as u64,
+            account_id.as_ptr() as u64,
+        )
+    }
+}
+
+fn near_promise_results_count() -> u64 {
+    unsafe { promise_results_count() }
+}
+
+fn near_promise_result(result_idx: u64) -> (u64, Vec<u8>) {
+    unsafe {
+        let status = promise_result(result_idx, 0);
+        if status == 1 {
+            (status, near_read_register_bytes(0))
+        } else {
+            (status, Vec::new())
+        }
+    }
+}
+
+fn near_promise_return(promise_id: u64) {
+    unsafe { promise_return(promise_id) }
+}
+
+// ---------------------------------------------------------------------------
+// Promise batch actions
+// ---------------------------------------------------------------------------
+
+fn near_promise_batch_action_create_account(promise_index: u64) {
+    unsafe { promise_batch_action_create_account(promise_index) }
+}
+
+fn near_promise_batch_action_deploy_contract(promise_index: u64, code: &[u8]) {
+    unsafe {
+        promise_batch_action_deploy_contract(promise_index, code.len() as u64, code.as_ptr() as u64)
+    }
+}
+
+fn near_promise_batch_action_function_call(
+    promise_index: u64,
+    function_name: &str,
+    arguments: &[u8],
+    amount: u128,
+    gas: u64,
+) {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe {
+        promise_batch_action_function_call(
+            promise_index,
+            function_name.len() as u64,
+            function_name.as_ptr() as u64,
+            arguments.len() as u64,
+            arguments.as_ptr() as u64,
+            amount_bytes.as_ptr() as u64,
+            gas,
+        )
+    }
+}
+
+fn near_promise_batch_action_function_call_weight(
+    promise_index: u64,
+    function_name: &str,
+    arguments: &[u8],
+    amount: u128,
+    gas: u64,
+    weight: u64,
+) {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe {
+        promise_batch_action_function_call_weight(
+            promise_index,
+            function_name.len() as u64,
+            function_name.as_ptr() as u64,
+            arguments.len() as u64,
+            arguments.as_ptr() as u64,
+            amount_bytes.as_ptr() as u64,
+            gas,
+            weight,
+        )
+    }
+}
+
+fn near_promise_batch_action_transfer(promise_index: u64, amount: u128) {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe { promise_batch_action_transfer(promise_index, amount_bytes.as_ptr() as u64) }
+}
+
+fn near_promise_batch_action_stake(promise_index: u64, amount: u128, public_key: &[u8]) {
+    let amount_bytes = amount.to_le_bytes();
+    unsafe {
+        promise_batch_action_stake(
+            promise_index,
+            amount_bytes.as_ptr() as u64,
+            public_key.len() as u64,
+            public_key.as_ptr() as u64,
+        )
+    }
+}
+
+fn near_promise_batch_action_add_key_with_full_access(
+    promise_index: u64,
+    public_key: &[u8],
+    nonce: u64,
+) {
+    unsafe {
+        promise_batch_action_add_key_with_full_access(
+            promise_index,
+            public_key.len() as u64,
+            public_key.as_ptr() as u64,
+            nonce,
+        )
+    }
+}
+
+fn near_promise_batch_action_add_key_with_function_call(
+    promise_index: u64,
+    public_key: &[u8],
+    nonce: u64,
+    allowance: u128,
+    receiver_id: &str,
+    function_names: &str,
+) {
+    let allowance_bytes = allowance.to_le_bytes();
+    unsafe {
+        promise_batch_action_add_key_with_function_call(
+            promise_index,
+            public_key.len() as u64,
+            public_key.as_ptr() as u64,
+            nonce,
+            allowance_bytes.as_ptr() as u64,
+            receiver_id.len() as u64,
+            receiver_id.as_ptr() as u64,
+            function_names.len() as u64,
+            function_names.as_ptr() as u64,
+        )
+    }
+}
+
+fn near_promise_batch_action_delete_key(promise_index: u64, public_key: &[u8]) {
+    unsafe {
+        promise_batch_action_delete_key(
+            promise_index,
+            public_key.len() as u64,
+            public_key.as_ptr() as u64,
+        )
+    }
+}
+
+fn near_promise_batch_action_delete_account(promise_index: u64, beneficiary_id: &str) {
+    unsafe {
+        promise_batch_action_delete_account(
+            promise_index,
+            beneficiary_id.len() as u64,
+            beneficiary_id.as_ptr() as u64,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Validator API
+// ---------------------------------------------------------------------------
+
+fn near_validator_stake(account_id: &str) -> u128 {
+    let mut buf = [0u8; 16];
+    unsafe {
+        validator_stake(
+            account_id.len() as u64,
+            account_id.as_ptr() as u64,
+            buf.as_mut_ptr() as u64,
+        )
+    };
+    u128::from_le_bytes(buf)
+}
+
+fn near_validator_total_stake() -> u128 {
+    let mut buf = [0u8; 16];
+    unsafe { validator_total_stake(buf.as_mut_ptr() as u64) };
+    u128::from_le_bytes(buf)
+}
+
+// ---------------------------------------------------------------------------
+// Alt BN128
+// ---------------------------------------------------------------------------
+
+fn near_alt_bn128_g1_multiexp(data: &[u8]) -> Vec<u8> {
+    unsafe { alt_bn128_g1_multiexp(data.len() as u64, data.as_ptr() as u64, 0) };
+    near_read_register_bytes(0)
+}
+
+fn near_alt_bn128_g1_sum(data: &[u8]) -> Vec<u8> {
+    unsafe { alt_bn128_g1_sum(data.len() as u64, data.as_ptr() as u64, 0) };
+    near_read_register_bytes(0)
+}
+
+fn near_alt_bn128_pairing_check(data: &[u8]) -> bool {
+    unsafe { alt_bn128_pairing_check(data.len() as u64, data.as_ptr() as u64) == 1 }
+}
+
+// ---------------------------------------------------------------------------
+// BLS12-381
+// ---------------------------------------------------------------------------
+
+fn near_bls12381_p1_sum(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_p1_sum(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_p2_sum(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_p2_sum(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_g1_multiexp(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_g1_multiexp(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_g2_multiexp(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_g2_multiexp(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_map_fp_to_g1(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_map_fp_to_g1(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_map_fp2_to_g2(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_map_fp2_to_g2(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_pairing_check(data: &[u8]) -> bool {
+    unsafe { bls12381_pairing_check(data.len() as u64, data.as_ptr() as u64) == 1 }
+}
+
+fn near_bls12381_p1_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_p1_decompress(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
+fn near_bls12381_p2_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    unsafe {
+        if bls12381_p2_decompress(data.len() as u64, data.as_ptr() as u64, 0) == 0 {
+            None
+        } else {
+            Some(near_read_register_bytes(0))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Python contract execution engine
 // ---------------------------------------------------------------------------
 
-fn run_precompiled(bytecode: &[u8]) {
+fn run_method(bytecode: &[u8], method_name: &str) {
     let runner = MontyRun::load(bytecode).unwrap_or_else(|e| {
         near_log(&format!("monty load error: {e}"));
         panic!("monty load error");
@@ -202,7 +637,11 @@ fn run_precompiled(bytecode: &[u8]) {
     let mut print = NoPrint;
 
     let mut progress = runner
-        .start(vec![], NoLimitTracker, &mut print)
+        .start(
+            vec![MontyObject::String(method_name.to_string())],
+            NoLimitTracker,
+            &mut print,
+        )
         .unwrap_or_else(|e| {
             near_log(&format!("monty start error: {e}"));
             panic!("monty start error");
@@ -236,6 +675,34 @@ fn run_precompiled(bytecode: &[u8]) {
 }
 
 fn dispatch_function(name: &str, args: &[MontyObject]) -> MontyObject {
+    // Argument extraction helpers
+    let arg_str = |idx: usize| -> Option<&str> {
+        match args.get(idx) {
+            Some(MontyObject::String(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    };
+    let arg_int = |idx: usize| -> Option<i64> {
+        match args.get(idx) {
+            Some(MontyObject::Int(n)) => Some(*n),
+            _ => None,
+        }
+    };
+    let arg_bytes = |idx: usize| -> Option<&[u8]> {
+        match args.get(idx) {
+            Some(MontyObject::String(s)) => Some(s.as_bytes()),
+            Some(MontyObject::Bytes(b)) => Some(b.as_slice()),
+            _ => None,
+        }
+    };
+    let arg_u128 = |idx: usize| -> Option<u128> {
+        match args.get(idx) {
+            Some(MontyObject::String(s)) => s.parse::<u128>().ok(),
+            Some(MontyObject::Int(n)) => Some(*n as u128),
+            _ => None,
+        }
+    };
+
     match name {
         "value_return" => {
             let s = match args.first() {
@@ -325,6 +792,319 @@ fn dispatch_function(name: &str, args: &[MontyObject]) -> MontyObject {
                 _ => return MontyObject::None,
             };
             MontyObject::String(to_hex(&near_keccak256(data)))
+        }
+
+        // --- Context API ---
+        "signer_account_pk" => MontyObject::String(to_hex(&near_signer_account_pk())),
+        "epoch_height" => MontyObject::Int(near_epoch_height() as i64),
+        "storage_usage" => MontyObject::Int(near_storage_usage() as i64),
+
+        // --- Economics API ---
+        "account_balance" => MontyObject::String(near_account_balance().to_string()),
+        "account_locked_balance" => MontyObject::String(near_account_locked_balance().to_string()),
+        "attached_deposit" => MontyObject::String(near_attached_deposit().to_string()),
+        "prepaid_gas" => MontyObject::Int(near_prepaid_gas() as i64),
+        "used_gas" => MontyObject::Int(near_used_gas() as i64),
+
+        // --- Math API (additional) ---
+        "random_seed" => MontyObject::String(to_hex(&near_random_seed())),
+        "keccak512" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::String(to_hex(&near_keccak512(data)))
+        }
+        "ripemd160" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::String(to_hex(&near_ripemd160(data)))
+        }
+        "ecrecover" => {
+            let hash = match args.first() {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            let sig = match args.get(1) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            let v = arg_int(2).unwrap_or(0) as u64;
+            let malleability_flag = arg_int(3).unwrap_or(0) as u64;
+            match near_ecrecover(&hash, &sig, v, malleability_flag) {
+                Some(pk) => MontyObject::String(to_hex(&pk)),
+                None => MontyObject::None,
+            }
+        }
+        "ed25519_verify" => {
+            let sig = match args.first() {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            let msg = arg_bytes(1).unwrap_or(b"");
+            let pub_key = match args.get(2) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            MontyObject::Bool(near_ed25519_verify(&sig, msg, &pub_key))
+        }
+
+        // --- Promises API ---
+        "promise_create" => {
+            let account_id = arg_str(0).unwrap_or("");
+            let function_name = arg_str(1).unwrap_or("");
+            let arguments = arg_bytes(2).unwrap_or(b"");
+            let amount = arg_u128(3).unwrap_or(0);
+            let gas = arg_int(4).unwrap_or(0) as u64;
+            MontyObject::Int(
+                near_promise_create(account_id, function_name, arguments, amount, gas) as i64,
+            )
+        }
+        "promise_then" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let account_id = arg_str(1).unwrap_or("");
+            let function_name = arg_str(2).unwrap_or("");
+            let arguments = arg_bytes(3).unwrap_or(b"");
+            let amount = arg_u128(4).unwrap_or(0);
+            let gas = arg_int(5).unwrap_or(0) as u64;
+            MontyObject::Int(near_promise_then(
+                promise_index,
+                account_id,
+                function_name,
+                arguments,
+                amount,
+                gas,
+            ) as i64)
+        }
+        "promise_and" => {
+            let indices: Vec<u64> = args
+                .iter()
+                .filter_map(|a| match a {
+                    MontyObject::Int(n) => Some(*n as u64),
+                    _ => None,
+                })
+                .collect();
+            MontyObject::Int(near_promise_and(&indices) as i64)
+        }
+        "promise_batch_create" => {
+            let account_id = arg_str(0).unwrap_or("");
+            MontyObject::Int(near_promise_batch_create(account_id) as i64)
+        }
+        "promise_batch_then" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let account_id = arg_str(1).unwrap_or("");
+            MontyObject::Int(near_promise_batch_then(promise_index, account_id) as i64)
+        }
+        "promise_results_count" => MontyObject::Int(near_promise_results_count() as i64),
+        "promise_result" => {
+            let result_idx = arg_int(0).unwrap_or(0) as u64;
+            let (status, data) = near_promise_result(result_idx);
+            if status == 1 {
+                match String::from_utf8(data) {
+                    Ok(s) => MontyObject::String(s),
+                    Err(e) => MontyObject::Bytes(e.into_bytes()),
+                }
+            } else {
+                MontyObject::None
+            }
+        }
+        "promise_return" => {
+            let promise_id = arg_int(0).unwrap_or(0) as u64;
+            near_promise_return(promise_id);
+            MontyObject::None
+        }
+
+        // --- Promise batch actions ---
+        "promise_batch_action_create_account" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            near_promise_batch_action_create_account(promise_index);
+            MontyObject::None
+        }
+        "promise_batch_action_deploy_contract" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let code = arg_bytes(1).unwrap_or(b"");
+            near_promise_batch_action_deploy_contract(promise_index, code);
+            MontyObject::None
+        }
+        "promise_batch_action_function_call" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let function_name = arg_str(1).unwrap_or("");
+            let arguments = arg_bytes(2).unwrap_or(b"");
+            let amount = arg_u128(3).unwrap_or(0);
+            let gas = arg_int(4).unwrap_or(0) as u64;
+            near_promise_batch_action_function_call(
+                promise_index,
+                function_name,
+                arguments,
+                amount,
+                gas,
+            );
+            MontyObject::None
+        }
+        "promise_batch_action_function_call_weight" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let function_name = arg_str(1).unwrap_or("");
+            let arguments = arg_bytes(2).unwrap_or(b"");
+            let amount = arg_u128(3).unwrap_or(0);
+            let gas = arg_int(4).unwrap_or(0) as u64;
+            let weight = arg_int(5).unwrap_or(1) as u64;
+            near_promise_batch_action_function_call_weight(
+                promise_index,
+                function_name,
+                arguments,
+                amount,
+                gas,
+                weight,
+            );
+            MontyObject::None
+        }
+        "promise_batch_action_transfer" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let amount = arg_u128(1).unwrap_or(0);
+            near_promise_batch_action_transfer(promise_index, amount);
+            MontyObject::None
+        }
+        "promise_batch_action_stake" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let amount = arg_u128(1).unwrap_or(0);
+            let public_key = match args.get(2) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            near_promise_batch_action_stake(promise_index, amount, &public_key);
+            MontyObject::None
+        }
+        "promise_batch_action_add_key_with_full_access" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let public_key = match args.get(1) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            let nonce = arg_int(2).unwrap_or(0) as u64;
+            near_promise_batch_action_add_key_with_full_access(promise_index, &public_key, nonce);
+            MontyObject::None
+        }
+        "promise_batch_action_add_key_with_function_call" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let public_key = match args.get(1) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            let nonce = arg_int(2).unwrap_or(0) as u64;
+            let allowance = arg_u128(3).unwrap_or(0);
+            let receiver_id = arg_str(4).unwrap_or("");
+            let function_names = arg_str(5).unwrap_or("");
+            near_promise_batch_action_add_key_with_function_call(
+                promise_index,
+                &public_key,
+                nonce,
+                allowance,
+                receiver_id,
+                function_names,
+            );
+            MontyObject::None
+        }
+        "promise_batch_action_delete_key" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let public_key = match args.get(1) {
+                Some(MontyObject::String(s)) => from_hex(s),
+                Some(MontyObject::Bytes(b)) => b.clone(),
+                _ => return MontyObject::None,
+            };
+            near_promise_batch_action_delete_key(promise_index, &public_key);
+            MontyObject::None
+        }
+        "promise_batch_action_delete_account" => {
+            let promise_index = arg_int(0).unwrap_or(0) as u64;
+            let beneficiary_id = arg_str(1).unwrap_or("");
+            near_promise_batch_action_delete_account(promise_index, beneficiary_id);
+            MontyObject::None
+        }
+
+        // --- Validator API ---
+        "validator_stake" => {
+            let account_id = arg_str(0).unwrap_or("");
+            MontyObject::String(near_validator_stake(account_id).to_string())
+        }
+        "validator_total_stake" => MontyObject::String(near_validator_total_stake().to_string()),
+
+        // --- Alt BN128 ---
+        "alt_bn128_g1_multiexp" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::String(to_hex(&near_alt_bn128_g1_multiexp(data)))
+        }
+        "alt_bn128_g1_sum" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::String(to_hex(&near_alt_bn128_g1_sum(data)))
+        }
+        "alt_bn128_pairing_check" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::Bool(near_alt_bn128_pairing_check(data))
+        }
+
+        // --- BLS12-381 ---
+        "bls12381_p1_sum" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_p1_sum(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_p2_sum" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_p2_sum(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_g1_multiexp" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_g1_multiexp(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_g2_multiexp" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_g2_multiexp(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_map_fp_to_g1" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_map_fp_to_g1(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_map_fp2_to_g2" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_map_fp2_to_g2(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_pairing_check" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            MontyObject::Bool(near_bls12381_pairing_check(data))
+        }
+        "bls12381_p1_decompress" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_p1_decompress(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
+        }
+        "bls12381_p2_decompress" => {
+            let data = arg_bytes(0).unwrap_or(b"");
+            match near_bls12381_p2_decompress(data) {
+                Some(r) => MontyObject::String(to_hex(&r)),
+                None => MontyObject::None,
+            }
         }
 
         _ => {

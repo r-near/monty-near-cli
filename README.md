@@ -1,104 +1,48 @@
 # monty-near-cli
 
-Compile Python smart contracts to NEAR-deployable WASM — using [Monty](https://github.com/pydantic/monty), stable Rust, and zero forks.
+Compile Python smart contracts to NEAR-deployable WASM using [Monty](https://github.com/pydantic/monty).
 
-## Highlights
-
-- **Zero forks** — uses upstream Monty directly (`pydantic/monty` main branch). No patched ruff, no patched nearcore.
-- **Stable Rust 1.91** — no nightly toolchain, no `-Zbuild-std`, no `--ignore-rust-version`.
-- **No post-processing** — raw `cargo build --release` output deploys directly. No `wasm-opt` required.
-- **Protocol 84 native** — NEAR's Wasmtime runtime handles bulk-memory WASM instructions (`memory.copy`/`memory.fill`) natively.
-- **14 NEAR host functions** — full coverage of the contract API surface.
-
-## How it works
-
-```
-┌─────────────┐     ┌───────────────────┐     ┌──────────────────┐
-│  Python src ├────►│  monty-near-cli   ├────►│  contract.wasm   │
-│  (*.py)     │     │  (host machine)   │     │  (deployable)    │
-└─────────────┘     └───────────────────┘     └──────────────────┘
-```
-
-1. **Parse** — the CLI reads your Python file and finds all top-level `def` functions (functions starting with `_` are ignored).
-2. **Pre-compile** — each function is compiled to Monty bytecode on the host using `MontyRun::new()` + `.dump()`.
-3. **Scaffold** — a temporary Rust project is created in `target/monty-near-build/` using embedded templates.
-4. **Splice** — serialized bytecode statics and `#[no_mangle] pub extern "C" fn` exports are spliced into the template at marker comments.
-5. **Build** — `cargo build --release` produces the final `wasm32-unknown-unknown` binary.
-6. **Output** — the WASM is copied to your specified output path.
-
-The resulting WASM contains only the Monty VM and serialized bytecode — LTO strips the parser entirely.
-
-## Installation
+## Quick start
 
 ```bash
+# Install
 cargo install --path .
+
+# Compile a Python contract to WASM
+monty-near-cli build contract.py -o contract.wasm
+
+# Deploy to NEAR
+near deploy myaccount.testnet contract.wasm
+near call myaccount.testnet hello --accountId myaccount.testnet
 ```
 
-Rust 1.91.0 is installed automatically via `rust-toolchain.toml`.
+Rust 1.91.0 and the `wasm32-unknown-unknown` target are installed automatically via `rust-toolchain.toml`.
 
-## Usage
+### Compatibility mode (current testnet/mainnet)
+
+The default build targets the upcoming Wasmtime-based runtime (nearcore 2.12+). To deploy to **current** testnet or mainnet (which still use NearVM), use `--compat`:
 
 ```bash
-monty-near-cli build contract.py -o contract.wasm
+monty-near-cli build contract.py -o contract.wasm --compat
 ```
 
-## Writing contracts
+This uses nightly Rust with `-Zbuild-std` and `-Ctarget-cpu=mvp` to produce WASM without bulk-memory instructions that NearVM rejects. Requires `rustup toolchain install nightly` and the `rust-src` component (installed automatically via the generated `rust-toolchain.toml`). The CLI itself remains on stable Rust.
 
-Contract methods are plain Python functions. Each top-level `def` becomes a NEAR contract method. The following built-in functions are available without any imports:
+If [`wasm-tools`](https://github.com/bytecodealliance/wasm-tools) is installed, the build automatically verifies the output contains no bulk-memory instructions.
 
-### I/O
+### Build flags
 
-| Function | Description |
-|---|---|
-| `input()` | Read the call's input data as a string |
-| `value_return(data)` | Set the return value of the call |
-| `log(message)` | Emit a log visible in transaction receipts |
+| Flag | Effect |
+|------|--------|
+| `--compat` | Build for current production NearVM (nightly + `-Zbuild-std -Ctarget-cpu=mvp`) |
+| `--no-wasm-opt` | Skip `wasm-opt -Oz` post-processing (enabled by default if `wasm-opt` is in PATH) |
+| `-o <path>` | Output path (default: `contract.wasm`) |
 
-### Storage
-
-| Function | Description |
-|---|---|
-| `storage_write(key, value)` | Write a key-value pair to persistent storage |
-| `storage_read(key)` | Read a value by key (returns `None` if missing) |
-| `storage_remove(key)` | Delete a key from storage |
-| `storage_has_key(key)` | Check if a key exists (returns `bool`) |
-
-### Context
-
-| Function | Description |
-|---|---|
-| `current_account_id()` | The contract's own account ID |
-| `predecessor_account_id()` | The immediate caller's account ID |
-| `signer_account_id()` | The original transaction signer |
-| `block_height()` | Current block height |
-| `block_timestamp()` | Current block timestamp (nanoseconds) |
-
-### Cryptography
-
-| Function | Description |
-|---|---|
-| `sha256(data)` | SHA-256 hash, returned as hex string |
-| `keccak256(data)` | Keccak-256 hash, returned as hex string |
-
-### Conventions
-
-- Top-level `def` functions become contract methods.
-- Functions starting with `_` are private (not exported).
-- `input()` returns raw UTF-8 bytes as a string — parse as needed.
-- `value_return()` accepts a string and sets it as the call's return value.
-- `storage_read()` returns `None` if the key doesn't exist.
-
-## Example
+## Example contract
 
 ```python
 def hello():
-    value_return("Hello from Monty on NEAR!")
-
-def greet():
-    name = input()
-    if name == "":
-        name = "World"
-    value_return("Hello, " + name + "!")
+    value_return("Hello from Python on NEAR!")
 
 def counter():
     count = storage_read("count")
@@ -109,81 +53,104 @@ def counter():
     count = count + 1
     storage_write("count", str(count))
     value_return(str(count))
-
-def kv_put():
-    data = input()
-    pos = data.find(":")
-    if pos < 0:
-        value_return("error: expected key:value")
-    else:
-        key = data[0:pos]
-        val = data[pos + 1:]
-        storage_write(key, val)
-        value_return("ok")
-
-def kv_get():
-    key = input()
-    val = storage_read(key)
-    if val is None:
-        value_return("")
-    else:
-        value_return(val)
 ```
 
-Build and deploy:
+Every top-level `def` becomes an exported NEAR contract method. Functions starting with `_` are private helpers. All [NEAR host functions](https://docs.near.org/build/smart-contracts/anatomy/environment) are available as Python builtins — no imports needed.
 
-```bash
-monty-near-cli build examples/example.py -o contract.wasm
-near deploy myaccount.testnet contract.wasm
-near call myaccount.testnet hello --accountId myaccount.testnet
+See [`examples/example.py`](examples/example.py) for a contract exercising the core host functions.
+
+## What is Monty?
+
+[Monty](https://github.com/pydantic/monty) is a Python-to-Rust compiler by the Pydantic team. It takes a subset of Python, parses it with [ruff](https://github.com/astral-sh/ruff)'s parser, and compiles it to a custom bytecode format. That bytecode runs on a small Rust VM (`MontyRun`) that can be compiled to `wasm32-unknown-unknown` — making it suitable for embedding in NEAR smart contracts.
+
+This CLI automates the pipeline: parse Python source → compile to Monty bytecode → embed the bytecode in a Rust WASM project with a NEAR-compatible runtime → produce a deployable `.wasm` file.
+
+## How compilation works
+
+```
+Python source → monty-near-cli (host) → contract.wasm (deployable)
 ```
 
-See [`examples/example.py`](examples/example.py) for a comprehensive contract exercising all 14 host functions.
+1. **Parse** — find all top-level `def` functions in the Python file.
+2. **Compile** — compile the entire source plus a generated dispatcher into a single Monty bytecode blob using `MontyRun::new()` + `.dump()`. The dispatcher is an `if`/`elif` chain that routes a `_method` variable to the correct function.
+3. **Scaffold** — create a temporary Rust project in `target/monty-near-build/` using embedded templates (`Cargo.toml`, `lib.rs`, toolchain config).
+4. **Splice** — inject the serialized bytecode and `#[no_mangle] pub extern "C" fn` exports into the template's `lib.rs` at marker comments.
+5. **Build** — `cargo build --release` targeting `wasm32-unknown-unknown`. LTO strips the Python parser entirely; only the VM and bytecode remain.
+6. **Optimize** — run `wasm-opt -Oz` on the output for size reduction (~11-12% savings).
+7. **Verify** — in `--compat` mode, run `wasm-tools validate --features=-bulk-memory` to confirm the output is NearVM-safe.
+
+Each exported method deserializes the shared bytecode, passes the method name as an input variable to the VM, and the dispatcher routes execution to the correct Python function.
 
 ## Testing
 
-Integration tests deploy the compiled contract to a NEAR sandbox and exercise every method:
+Integration tests use [bun](https://bun.sh) and [near-kit](https://kit.near.tools) to deploy the compiled contract to a local NEAR sandbox:
 
 ```bash
-cargo test --test sandbox
+cd tests && bun install && bun test
 ```
 
-This uses [`near-workspaces`](https://github.com/near/near-workspaces-rs) to automatically download and run a sandbox node. No manual setup required.
+There are two test suites:
 
-## Why no forks?
+- **`contract.test.ts`** — default build, runs against sandbox `master` (Wasmtime with bulk-memory support)
+- **`contract.compat.test.ts`** — `--compat` build, runs against sandbox `2.10.6` (production NearVM)
 
-Previously, building Monty for NEAR required maintaining forks of multiple repositories. All of those patches are now unnecessary:
+To run just the compat tests: `bun test contract.compat.test.ts`
 
-| What was forked | Why | Why it's no longer needed |
+## Technical details
+
+### Bulk memory and NearVM compatibility
+
+Starting with Rust 1.87, LLVM emits `bulk-memory` WASM instructions (`memory.copy`, `memory.fill`) by default. NEAR's current production VM (NearVM, a Wasmer 2.x fork) rejects these with `PrepareError::Instantiate`, so most NEAR contract tooling is pinned to Rust 1.86 or earlier.
+
+This project can't pin to Rust 1.86 because Monty's dependencies require `let_chains` (stable since 1.87). Instead, two build modes are provided:
+
+| | Default | `--compat` |
 |---|---|---|
-| `pydantic/monty` | `let_chains`, `.cast_signed()`, `.is_multiple_of()` were unstable | All stabilized in Rust 1.87+ |
-| `pydantic/monty` | ahash needed `no-rng` feature | getrandom 0.3 custom backend handles it |
-| `astral-sh/ruff` | One `let_chains` usage in `helpers.rs` | Stable since Rust 1.87 |
-| Build flags | `-Ctarget-cpu=mvp`, `-Zbuild-std` to strip bulk-memory | Protocol 84 uses Wasmtime — bulk-memory supported natively |
-| `wasm-opt` | Required post-processing for old protocol | Raw WASM deploys directly |
+| **Target runtime** | Wasmtime (nearcore 2.12+) | Current NearVM (Wasmer) |
+| **Rust toolchain** | Stable 1.91.0 | Nightly |
+| **Bulk-memory instructions** | Present | Stripped via `-Ctarget-cpu=mvp` |
+| **Deployable today** | Sandbox only | Testnet and mainnet |
+| **Cargo flags** | `build --release` | `build --release -Zbuild-std=std,panic_abort` |
+
+**⚠️ The default build (without `--compat`) is not yet deployable on testnet or mainnet.** The Wasmtime switch is part of nearcore 2.12, with mainnet deployment expected late March / early April 2026 ([stabilization PR](https://github.com/near/nearcore/pull/14315)). Until then, use `--compat` for testnet/mainnet, or deploy to a local sandbox running `master`.
+
+For background, see the [`contract-runtime > bulk memory support`](https://near.zulipchat.com/#narrow/channel/295306-contract-runtime/topic/bulk.20memory.20support) thread on near.zulipchat.com.
+
+### wasm-opt
+
+The build runs [`wasm-opt -Oz`](https://github.com/WebAssembly/binaryen) automatically after `cargo build` to reduce WASM size through dead code elimination, constant folding, and other optimizations. This typically saves ~11-12% (~100 KB). Pass `--no-wasm-opt` to skip this step, or install wasm-opt with `cargo install wasm-opt` if it's not already available.
+
+Note: while `wasm-opt` can strip some post-MVP features like `multi-value` and `reference-types`, it [cannot strip `bulk-memory` instructions](https://near.zulipchat.com/#narrow/channel/295306-contract-runtime/topic/bulk.20memory.20support). This is why `--compat` solves the problem at the compiler level (via `-Ctarget-cpu=mvp`) rather than relying on post-processing.
+
+### getrandom and ahash
+
+Monty depends on `ahash`, which depends on `getrandom` for hash randomization. `getrandom` doesn't compile for `wasm32-unknown-unknown` by default. Instead of using the `no-rng` feature flag (which would require forking monty's `Cargo.toml`), the template project implements a [getrandom 0.3 custom backend](https://docs.rs/getrandom/latest/getrandom/#custom-backend) that provides randomness from NEAR's VRF-based `random_seed()` host function.
+
+## Known limitations
+
+- **Python subset** — Monty compiles a subset of Python. Classes, decorators, exceptions (`try`/`except`), list comprehensions, `*args`/`**kwargs`, and the standard library are not supported. See [Monty's documentation](https://github.com/pydantic/monty) for the full list of supported features.
+- **String-only storage** — host functions pass data as strings. There is no built-in JSON serialization; parse and format manually.
+- **No panic handling** — if the Monty VM encounters an error, the contract panics with a generic message. Python exceptions are not supported.
+- **WASM size** — the output is ~790-830 KB (after wasm-opt) due to the embedded Monty VM. This is within NEAR's 1.5 MB contract size limit but larger than typical Rust SDK contracts.
 
 ## Project structure
 
 ```
 monty-near-cli/
-├── src/main.rs              # CLI: parse → compile → scaffold → build
+├── src/main.rs                # CLI: parse → compile → scaffold → build → optimize
 ├── template/
-│   ├── Cargo.toml            # Generated project manifest
-│   ├── rust-toolchain.toml   # Pins Rust 1.91.0 + wasm32 target
-│   ├── .cargo/config.toml    # WASM target config, getrandom backend
-│   └── src/lib.rs            # NEAR runtime: FFI, host wrappers, VM loop
+│   ├── Cargo.toml             # Generated project dependencies
+│   ├── rust-toolchain.toml    # Pins Rust 1.91.0 + wasm32 target
+│   ├── .cargo/config.toml     # WASM target, getrandom backend
+│   └── src/lib.rs             # NEAR runtime: FFI imports, host wrappers, VM loop
 ├── examples/
-│   └── example.py            # 13-method contract using all host functions
+│   └── example.py             # 13-method contract using all host functions
 ├── tests/
-│   └── sandbox.rs            # Integration tests via near-workspaces
-├── Cargo.toml
-└── rust-toolchain.toml       # CLI's own toolchain (1.91.0)
+│   ├── contract.test.ts       # Integration tests (bun + near-kit, sandbox master)
+│   ├── contract.compat.test.ts # Compat mode tests (sandbox 2.10.6)
+│   └── package.json
+└── Cargo.toml
 ```
-
-## Requirements
-
-- Rust 1.91.0+ (auto-installed via `rust-toolchain.toml`)
-- That's it.
 
 ## License
 

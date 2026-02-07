@@ -1,0 +1,7 @@
+{
+  "name": "monty-near-cli-tests",
+  "private": true,
+  "dependencies": {
+    "near-kit": "latest"
+  }
+}

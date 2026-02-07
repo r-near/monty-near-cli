@@ -1,2 +1,5 @@
 /target
 *.wasm
+tests/node_modules
+tests/bun.lock
+ANNOUNCEMENT.md
