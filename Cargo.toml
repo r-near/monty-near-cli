@@ -1,0 +1,15 @@
+[package]
+name = "monty-near-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monty = { git = "https://github.com/pydantic/monty.git", branch = "main" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[dev-dependencies]
+near-workspaces = "0.22"
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+hex = "0.4"
